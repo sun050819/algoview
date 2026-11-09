@@ -5,9 +5,41 @@
 import { app, BrowserWindow, Menu, protocol, dialog, ipcMain, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { pathToFileURL } from 'url';
 
 const APP_SCHEME = 'app';
+
+/* ---------- 0. 用户数据目录：安装版与绿色版必须分开 ---------- */
+/**
+ * 默认用户数据目录是 %APPDATA%\<productName>，这里会变成中文的「算法视界」，两个问题：
+ *   1. 安装版与绿色版共用同一个目录 → requestSingleInstanceLock 互相顶掉，
+ *      后打开的那个会被顶回前一个窗口；
+ *   2. 中文目录名没法写进 NSIS 卸载脚本（makensis 按系统代码页解析脚本）。
+ * 因此统一成 ASCII 的 AlgoView；绿色版（exe 同级有 portable.marker）再挪到
+ * exe 同级 userdata/，真正做到解压即用、不写 AppData，两版可同时开。
+ */
+function applyUserDataPaths(): void {
+  if (!app.isPackaged) return;
+  const exeDir = path.dirname(process.execPath);
+  if (fs.existsSync(path.join(exeDir, 'portable.marker'))) {
+    let dir = path.join(exeDir, 'userdata');
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.accessSync(dir, fs.constants.W_OK);
+    } catch {
+      // 只读介质（光盘 / 只读U盘）→ 退回临时目录，至少不崩
+      dir = path.join(os.tmpdir(), 'AlgoView-portable');
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    app.setPath('userData', dir);
+    app.setPath('sessionData', dir);
+    return;
+  }
+  app.setPath('userData', path.join(app.getPath('appData'), 'AlgoView'));
+}
+
+applyUserDataPaths();
 
 /* ---------- 1. 注册自定义协议（特权） ---------- */
 function registerPrivilegedSchemes(): void {

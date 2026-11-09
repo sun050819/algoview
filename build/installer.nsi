@@ -40,5 +40,8 @@ Section "Uninstall"
   RMDir /r "$SMPROGRAMS\AlgoView"
   DeleteRegKey HKCU "Software\AlgoView"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AlgoView"
+  ; user data: renderer cache / local settings live in %APPDATA%\AlgoView
+  ; (electron/main.ts pins the folder to this ASCII name, see applyUserDataPaths)
+  RMDir /r "$APPDATA\AlgoView"
   RMDir /r "$INSTDIR"
 SectionEnd

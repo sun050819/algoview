@@ -1,16 +1,22 @@
 /**
- * 本地执行服务（算法视界前端 + 真实执行桥）
+ * 本地服务（算法视界前端 + 真实执行桥）
  *
- *   GET  /       → 算法视界前端（dist/index.html）
- *   GET  /algo/  → 同上（保留带前缀的地址，方便从外部链接直接进入应用）
- *   GET  /health → { ok, tools: { python, java, c, cpp } }
- *   POST /run    → { lang, code } → { events, output, error, timeMs }
+ *   GET  /             → 开发态：个人主页；独立分发：算法视界前端
+ *   GET  /css|js|assets|case/… → 开发态才有：个人主页与项目过渡页的静态资源
+ *   GET  /case/algo/   → 开发态才有：项目过渡页（介绍 / 在线打开 / 下载）
+ *   GET  /algo/        → 算法视界前端（dist/）
+ *   GET  /health       → { ok, tools: { python, java, c, cpp } }
+ *   POST /run          → { lang, code } → { events, output, error, timeMs }
+ *
+ * 个人主页 / 过渡页的托管被拆到可选的 server/site.cjs：
+ * 开发态的完整目录里有它，打包出去的应用（桌面版 / Web 离线包）没有，
+ * require 失败 → hasSite=false，只服务 /algo/，不会把个人主页一起分发出去。
  *
  * 为什么必须有这个本地进程：浏览器里没有编译器和调试器，
  * 页面由本服务托管、同源请求 /run，既没有跨域，也不会出现"页面能开但跑不起来"。
  *
  * 只监听 127.0.0.1，不对外网开放。
- * 启动：node server/bridge.cjs   （或双击仓库根目录的「start.cmd」）
+ * 启动：node server/bridge.cjs（开发态也可双击「启动个人主页.cmd」，仓库版用 start.cmd）
  */
 
 'use strict';
@@ -25,6 +31,15 @@ const PORT = Number(process.env.DSA_BRIDGE_PORT || 5321);
 const HOST = '127.0.0.1';
 const RUNTIME_DIR = path.join(__dirname, '..', 'runtime');
 const ALGO_DIR = path.join(__dirname, '..', 'dist');
+
+/**
+ * 个人主页托管是**可选**的：只有开发态的完整目录里才有 server/site.cjs。
+ * 桌面版与 Web 离线包里不带这个文件，require 直接失败 →
+ * hasSite 为 false，包内只服务 /algo/，不残留主页逻辑。
+ */
+let site = null;
+try { site = require('./site.cjs'); } catch { site = null; }
+const hasSite = !!(site && site.hasSite);
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -89,10 +104,10 @@ const MIME = {
   '.map': 'application/json; charset=utf-8',
 };
 
-/** 把 rootDir 下的 rel 读出来发回去；headOnly 只回头信息，不发正文 */
+/** 把 rootDir 下的 rel 读出来发回去；headOnly 用于下载卡片的 HEAD 探测 */
 function serveFile(rootDir, rel, res, headOnly = false) {
   if (rel === '/' || rel === '') rel = '/index.html';
-  if (rel.endsWith('/')) rel += 'index.html';   // 目录式地址（/algo/）补上 index.html
+  if (rel.endsWith('/')) rel += 'index.html';   // /case/algo/ → /case/algo/index.html
   const file = path.join(rootDir, path.normalize(rel).replace(/^([/\\])+/, ''));
   // 防目录穿越
   if (file !== rootDir && !file.startsWith(rootDir + path.sep)) {
@@ -120,11 +135,13 @@ function serveFile(rootDir, rel, res, headOnly = false) {
     }
     const headers = {
       'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
-      'Cache-Control': rel === '/index.html' || rel === '/' ? 'no-store' : 'max-age=3600',
+      // HTML 一律不缓存：改完刷新就能看到；图片/字体/打包产物给 1 小时
+      'Cache-Control': /\.html?$/i.test(file) || rel === '/' ? 'no-store' : 'max-age=3600',
       'Content-Length': st.size,
     };
-    // 大文件用流发，别整块读进内存
+    // 安装包是 100MB 量级：用流发，别整块读进内存；顺便强制下载
     const isBig = st.size > 4 * 1024 * 1024;
+    if (isBig) headers['Content-Disposition'] = `attachment; filename="${path.basename(file)}"`;
     res.writeHead(200, headers);
     if (headOnly) { res.end(); return; }
     if (isBig) {
@@ -141,18 +158,37 @@ function serveFile(rootDir, rel, res, headOnly = false) {
 }
 
 /**
- * 路由：只托管算法视界前端。
- * 前端资源都用相对路径引用（./assets/…），所以挂在哪个前缀下都不需要给前端配 base。
+ * 路由：/algo/* 归算法视界，其余归个人主页。
+ * 下面这两个站点的资源都用相对路径引用（css/… 、./assets/…），
+ * 所以只要目录挂对，不需要给前端配 base。
  */
 function routeStatic(pathname, res, headOnly = false) {
   // 带子路径的页面必须带斜杠，否则页内相对资源会解析到上一级去
-  if (pathname === '/algo') {
-    res.writeHead(301, { Location: '/algo/' });
+  if (pathname === '/algo' || pathname === '/case/algo') {
+    res.writeHead(301, { Location: pathname + '/' });
     res.end();
     return;
   }
-  const rel = pathname.startsWith('/algo/') ? pathname.slice('/algo'.length) || '/' : pathname;
-  serveFile(ALGO_DIR, rel, res, headOnly);
+  if (pathname.startsWith('/algo/')) {
+    const rel = pathname.slice('/algo'.length) || '/';
+    serveFile(ALGO_DIR, rel, res, headOnly);
+    return;
+  }
+  // 主页根目录不存在（算法视界被单独分发）时，退回自带页面
+  if (!hasSite) {
+    serveFile(ALGO_DIR, pathname === '/' ? '/index.html' : pathname, res, headOnly);
+    return;
+  }
+  if (pathname === '/' || pathname === '/index.html') {
+    serveFile(site.SITE_DIR, '/index.html', res, headOnly);
+    return;
+  }
+  if (site.SITE_ALLOW.test(pathname)) {
+    serveFile(site.SITE_DIR, pathname, res, headOnly);
+    return;
+  }
+  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('404');
 }
 
 const server = http.createServer(async (req, res) => {
@@ -164,12 +200,13 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || '/', `http://${HOST}:${PORT}`);
 
-  if (req.method === 'GET' && url.pathname === '/health') {
+  // HEAD 也要给：过渡页靠 HEAD /health 探活，只认 GET 会误判成"服务没起来"
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/health') {
     send(res, 200, { ok: true, service: 'dsa-bridge', port: PORT, tools: tools() });
     return;
   }
 
-  // HEAD 与 GET 共用静态路由：HEAD 只回头信息，不发正文
+  // HEAD 要给过渡页用：它靠 HEAD 探测安装包是否存在，再决定按钮能不能点
   if ((req.method === 'GET' || req.method === 'HEAD') && !url.pathname.startsWith('/run')) {
     routeStatic(decodeURIComponent(url.pathname), res, req.method === 'HEAD');
     return;
@@ -214,9 +251,11 @@ server.listen(PORT, HOST, () => {
   const mark = (x) => (x.ok ? '✓' : '✗');
   const base = `http://${HOST}:${PORT}`;
   console.log('');
-  console.log('  算法视界 · 已就绪');
+  console.log(hasSite ? '  个人主页 · 已就绪' : '  算法视界 · 已就绪');
   console.log('');
-  console.log(`  应用地址   ${base}/`);
+  console.log(`  个人主页   ${base}/`);
+  if (hasSite) console.log(`  项目介绍   ${base}/case/algo/`);
+  console.log(`  算法视界   ${base}/algo/`);
   console.log('');
   console.log(`  ${mark(t.python)} Python   ${t.python.path || '未检测到 python'}`);
   console.log(`  ${mark(t.java)} Java     ${t.java.ok ? t.java.javac : '未找到 javac / java'}`);

@@ -1,5 +1,5 @@
 /**
- * 生成三个发布包（全程离线，只用本机已有缓存）
+ * 生成过渡页「下载」区的三个产物（全程离线，只用本机已有缓存）
  *
  *   AlgoView-Setup-1.0.0.exe      NSIS 安装版
  *   AlgoView-Portable-1.0.0.zip   免安装绿色版（解压双击 AlgoView.exe）
@@ -18,12 +18,26 @@ import { execFileSync } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/**
+ * 个人主页根目录：从本脚本向上找"同时有 index.html 和 case/"的那一层。
+ * 不写死目录名/层级，所以整套目录改名或搬走后仍能定位下载区。
+ * 单独分发（把本仓库单独 clone 出去）时找不到，返回 null，产物落到本仓库的 artifacts/。
+ */
+function findSiteDir(start) {
+  let dir = start;
+  for (let i = 0; i < 5; i++) {
+    dir = path.dirname(dir);
+    if (fs.existsSync(path.join(dir, 'index.html')) && fs.existsSync(path.join(dir, 'case'))) return dir;
+  }
+  return null;
+}
+const SITE = findSiteDir(ROOT);
 const REL = path.join(ROOT, 'release');
 const WIN = path.join(REL, 'win-unpacked');
 const APP = path.join(WIN, 'resources', 'app');
 const WEB = path.join(REL, 'web-offline', 'AlgoView-Web-Offline');
-/** 产物统一写到仓库根目录的 artifacts/（已在 .gitignore 里） */
-const OUT = path.join(ROOT, 'artifacts');
+/** 有个人主页就写进它的下载目录；单独 clone 时写进本仓库 artifacts/ */
+const OUT = SITE ? path.join(SITE, 'case', 'algo', 'downloads') : path.join(ROOT, 'artifacts');
 const INSTALLER_NSI = path.join(ROOT, 'build', 'installer.nsi');
 const LOCAL = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local');
 
@@ -59,11 +73,14 @@ fs.mkdirSync(OUT, { recursive: true });
 log('7za     ' + Z7);
 log('makensis ' + NSIS);
 
-/** 递归复制目录（先清目标，避免上次的嵌套副本残留） */
-function sync(src, dst) {
+/** 递归复制目录（先清目标，避免上次的嵌套副本残留）；exclude 可按文件名剔除 */
+function sync(src, dst, exclude = []) {
   fs.rmSync(dst, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.cpSync(src, dst, { recursive: true });
+  fs.cpSync(src, dst, {
+    recursive: true,
+    filter: (from) => !exclude.includes(path.basename(from)),
+  });
 }
 
 /* ── 1. Electron 运行时 ─────────────────────────────── */
@@ -91,7 +108,8 @@ need(path.join(WIN, 'AlgoView.exe'), 'release/win-unpacked/AlgoView.exe');
 log('同步前端 / 追踪器 / 执行引擎 → resources/app');
 fs.mkdirSync(APP, { recursive: true });
 sync(path.join(ROOT, 'dist'), path.join(APP, 'dist'));
-sync(path.join(ROOT, 'server'), path.join(APP, 'server'));
+// site.cjs 是"顺便托管个人主页"的开发态模块，产物里一定不能带
+sync(path.join(ROOT, 'server'), path.join(APP, 'server'), ['site.cjs']);
 sync(path.join(ROOT, 'runtime'), path.join(APP, 'runtime'));
 sync(path.join(ROOT, 'electron', 'out'), path.join(APP, 'electron', 'out'));
 fs.writeFileSync(path.join(APP, 'package.json'), JSON.stringify({
@@ -104,7 +122,7 @@ log('桌面目录就绪');
 /* ── 3. Web 离线包内容 ─────────────────────────────── */
 fs.mkdirSync(WEB, { recursive: true });
 sync(path.join(ROOT, 'dist'), path.join(WEB, 'dist'));
-sync(path.join(ROOT, 'server'), path.join(WEB, 'server'));
+sync(path.join(ROOT, 'server'), path.join(WEB, 'server'), ['site.cjs']);
 sync(path.join(ROOT, 'runtime'), path.join(WEB, 'runtime'));
 fs.writeFileSync(path.join(WEB, 'package.json'), '{"name":"algoview-web-offline","version":"1.0.0","private":true}\n');
 fs.writeFileSync(path.join(WEB, '启动服务.cmd'), [
@@ -121,6 +139,7 @@ fs.writeFileSync(path.join(WEB, 'README.md'), [
   '无需 npm install、无需联网。已包含构建好的前端、本地服务与三套追踪器。', '',
   '## 启动', '1. 安装 Node.js 18+；2. 双击 `启动服务.cmd` 并保持窗口开着；',
   '3. 浏览器打开 http://127.0.0.1:5321/ 。', '',
+  '本包不含个人主页与过渡页，所以根路径会直接落到算法视界应用。', '',
   '## 语言工具链（按需）',
   '- Python 3.8+ / JDK 8+（`javac`、`java` 在 PATH）/ MinGW-w64（`gcc`、`g++`、`gdb`）。',
   '- 启动窗口会打印四种语言是否就绪；缺哪个只影响那一门。', '',
@@ -128,15 +147,37 @@ fs.writeFileSync(path.join(WEB, 'README.md'), [
 ].join('\n'));
 
 /* ── 4. 三个产物 ───────────────────────────────────── */
-function zip(outFile, cwd) {
+function zip(outFile, cwd, entry = './*') {
   const target = path.join(OUT, outFile);
-  execFileSync(Z7, ['a', '-tzip', '-mx=3', '-y', target, './*'], { cwd, stdio: 'ignore' });
+  fs.rmSync(target, { force: true });
+  execFileSync(Z7, ['a', '-tzip', '-mx=3', '-y', target, entry], { cwd, stdio: 'ignore' });
   log(outFile + '  ' + (fs.statSync(target).size / 1048576).toFixed(1) + ' MB');
 }
 log('打包 Web 离线包…');
 zip('AlgoView-Web-Offline.zip', WEB);
 log('打包绿色版（367MB，稍等）…');
-zip('AlgoView-Portable-1.0.0.zip', WIN);
+/*
+ * 绿色版必须解压出**一个顶层目录**，否则一堆文件直接散在解压目录里。
+ * 做法：临时把 win-unpacked 改名成 AlgoView-1.0.0 再压（同盘 rename 是瞬时的），
+ * 压完改回来；顺便在包里放 portable.marker —— 主进程靠它判断"我是绿色版"，
+ * 从而把用户数据放到 exe 同级 userdata/，不再和安装版抢 %APPDATA%。
+ */
+const PORTABLE_NAME = 'AlgoView-1.0.0';
+const PORTABLE_MARKER = 'portable.marker';
+const portableSrc = path.join(REL, PORTABLE_NAME);
+fs.rmSync(portableSrc, { recursive: true, force: true });
+fs.writeFileSync(path.join(WIN, PORTABLE_MARKER), [
+  '这个文件说明当前目录是「算法视界 绿色版」。',
+  '它的存在会让程序把运行数据写在同级的 userdata\\ 目录里（不写 AppData），',
+  '所以绿色版和安装版可以同时打开，互不影响。删掉它就会退回安装版的行为。',
+].join('\r\n'));
+fs.renameSync(WIN, portableSrc);
+try {
+  zip('AlgoView-Portable-1.0.0.zip', REL, PORTABLE_NAME);
+} finally {
+  fs.renameSync(portableSrc, WIN);
+  fs.rmSync(path.join(WIN, PORTABLE_MARKER), { force: true });   // 安装包不能带这个标记
+}
 log('生成 NSIS 安装包（LZMA 压缩最慢，约 6 分钟）…');
 need(INSTALLER_NSI, 'build/installer.nsi');
 // NSIS 用系统代码页读脚本，命令行里的中文路径会被读坏：

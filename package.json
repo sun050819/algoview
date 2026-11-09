@@ -15,7 +15,8 @@
     "dist": "npm run build && npm run desktop:compile && node scripts/package.mjs",
     "desktop:compile": "esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=electron/out/main.cjs && esbuild electron/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=electron/out/preload.cjs",
     "desktop:dev": "npm run build && npm run desktop:compile && electron .",
-    "desktop:build": "npm run build && npm run desktop:compile && electron-builder --win"
+    "desktop:build": "npm run build && npm run desktop:compile && electron-builder --win",
+    "sync:repo": "node scripts/sync-repo.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

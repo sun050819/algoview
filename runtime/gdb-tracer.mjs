@@ -126,6 +126,23 @@ function unescapeMi(s) {
     .replace(/\\\\/g, '\\');
 }
 
+// 把 MI 字符串（尚未反转义）按其中的 \n 转义切成"原始行"。
+// 为什么不在反转义后切：源码回显里可能本身带 \n（printf("a\nb")），
+// 反转义后行数就对不上了，行号前缀会被切断。
+function splitRawLines(raw) {
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === '\\') {
+      if (raw[i + 1] === 'n') { out.push(raw.slice(start, i)); i++; start = i + 1; continue; }
+      i++; // 跳过 \\ \\t 之类的转义对
+      continue;
+    }
+  }
+  out.push(raw.slice(start));
+  return out;
+}
+
 // gdb console 噪音判断（横幅 / 断点 / 单步提示 / 源码行等，程序输出不会长这样）
 function isGdbNoise(t) {
   if (!t || t === '(gdb)' || t.startsWith('(gdb) ')) return true;
@@ -144,7 +161,12 @@ function isGdbNoise(t) {
   if (t.startsWith('&"') || t.startsWith('@"')) return true;
   if (t.includes('alpc_implv2') || t.includes('Host_Ipc_agent')) return true;
   if (t.includes('tsbx.dll') || t.includes('LiteSandbox')) return true;
+  // 停止位置描述：`2  main () at main.cpp:7` / `1, _GLOBAL__sub_I_main () at main.cpp:5`
+  // 这一行常和程序输出挤在同一个 ~"..." 里，不剥掉就会出现在"输出"面板
   if (/^\d+\s{2,}\S/.test(t)) return true;
+  if (/^\d+[,:]\s*\S+\s*\(\)/.test(t)) return true;
+  if (/_GLOBAL__sub_I_|__static_initialization_and_destruction/.test(t)) return true;
+  if (/\bat\s+\S+\.(?:c|cc|cpp|cxx|h|hpp):\d+\s*$/.test(t)) return true;
   return false;
 }
 
@@ -234,7 +256,9 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
   const srcName = path.basename(srcPath);
   let gdbProc;
   try {
-    gdbProc = spawn(gdb, ['--interpreter=mi2', exePath], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    // -q 关掉 gdb 启动横幅：banner 的续行（"and \"show warranty\" for details."）
+    // 没有固定前缀，靠字符串匹配过滤不干净，直接从源头禁掉最稳
+    gdbProc = spawn(gdb, ['-q', '--interpreter=mi2', exePath], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   } catch (e) {
     print('__EVENTS_START__'); print('__EVENTS_END__');
     printOutput('无法启动 gdb：' + e.message);
@@ -251,6 +275,9 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
   const callStack = []; // 逻辑调用栈（仅用户函数）
   let lastLine = 0;
   let cmdId = 0;
+  // gdb 停在断点时会在 CLI 里多打一行"源码回显"（`2\tint main() {...}`），
+  // 格式与程序输出无法区分，所以用上一条 "… in main () at file.c:12" 做前导标记
+  let sourceEchoPending = false;
   const cmdPending = new Map();
   const cmdQueue = [];
   function sendCmd(cmd, cb) {
@@ -313,24 +340,45 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
         finalize();
       }
     } else if (line.startsWith('~"')) {
-      // console stream：程序 stdout（printf/cout 输出），提取透传（过滤 gdb 噪音）
+      // console stream：程序 stdout（printf/cout 输出）。gdb 会把"停止位置描述"
+      // 和"源码回显"也塞进这个流里，所以必须逐行过噪音表。
       const m = /^~"((?:[^"\\]|\\.)*)"/.exec(line);
       if (m) {
-        let content = unescapeMi(m[1]);
-        // 行内混入 gdb 横幅片段（如 "1 2 5 7 9\n[Inferior 1 ... exited normally]"）→ 剥离
-        content = content
-          .replace(/&"(?:[^"\\]|\\.)*"/g, '')      // 混进来的 gdb 日志片段
-          .replace(/\[Inferior[^\]]*\]/g, '')        // 退出横幅
-          .replace(/\n{3,}/g, '\n\n');
-        if (running && !isGdbNoise(content.replace(/\n$/, '').trim())) printOutput(content + '\n');
+        // 按"原始行"处理：gdb 常把 停止位置描述 / 源码回显 / 程序输出 打进同一个 chunk，
+        // 逐行判断才能只丢前两者
+        const kept = [];
+        for (const rl of splitRawLines(m[1])) {
+          // 停止位置描述：`1, 0x... in main () at main.cpp:2`
+          if (/\bin \S+ \(\) at [^"]*:\d+$/.test(rl)) { sourceEchoPending = true; continue; }
+          // 紧跟其后的源码回显：`3\tint main() { ... }`
+          if (sourceEchoPending && /^\d+\\t/.test(rl)) { sourceEchoPending = false; continue; }
+          const ln = unescapeMi(rl)
+            .replace(/&"(?:[^"\\]|\\.)*"/g, '')   // 混进来的 gdb 日志片段
+            .replace(/\[Inferior[^\]]*\]/g, '')     // 退出横幅
+            .replace(/\[New Thread[^\]]*\]/g, '')
+            .replace(/\[Thread[^\]]*\]/g, '');
+          if (ln.trim() === '') { kept.push(''); continue; }
+          if (isGdbNoise(ln.trim())) continue;
+          kept.push(ln);
+          sourceEchoPending = false;   // 已经是真正的程序输出了，回显标记作废
+        }
+        const content = kept
+          .join('\n')
+          .replace(/^\n+/, '')
+          .replace(/\n{3,}/g, '\n\n')
+          .replace(/\n+$/, '');
+        // 不再看 running：程序最后一行的输出可能和 *stopped 挤在同一个 chunk 里，
+        // 用 running 卡会把末尾输出吞掉；噪音已由上面的逐行过滤负责
+        if (content.trim() !== '') printOutput(content + '\n');
       }
+    } else if (line.startsWith('&"')) {
     } else if (line.startsWith('&"')) {
       // log stream：gdb / 注入的 DLL 自己打的日志（"warning: [TSBX] ..."），
       // 不是程序输出，直接丢弃，避免污染"输出"面板
     } else if (line.startsWith('@"')) {
-      // target output stream：程序直接输出
+      // target output stream：程序直接输出，不掺 gdb 消息，原样透传
       const m = /^@"((?:[^"\\]|\\.)*)"/.exec(line);
-      if (m && running) printOutput(unescapeMi(m[1]) + '\n');
+      if (m) printOutput(unescapeMi(m[1]) + '\n');
     } else {
       // 裸行 → 可能是程序输出或 gdb console 噪音；按内容过滤
       const t = line.trim();

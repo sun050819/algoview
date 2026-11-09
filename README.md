@@ -27,7 +27,7 @@ Python / Java / C / C++ 都调用你本机的解释器和编译器真实执行�
 需要 **Node.js 18+**。
 
 ```bash
-git clone https://github.com/sun050819/algoview.git   # 换成你的仓库地址
+git clone https://github.com/sun050819/algoview.git
 cd algoview
 npm install
 npm run build
