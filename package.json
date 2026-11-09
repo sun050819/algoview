@@ -1,0 +1,69 @@
+{
+  "name": "algoview",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "算法视界 AlgoView —— 写代码看动画，数据结构与算法可视化平台",
+  "main": "electron/out/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "verify": "esbuild scripts/verify.ts --bundle --platform=node --format=esm --outfile=.cache/verify.mjs && node .cache/verify.mjs",
+    "test:engine": "node scripts/smoke-runner.cjs",
+    "dist": "npm run build && npm run desktop:compile && node scripts/package.mjs",
+    "desktop:compile": "esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=electron/out/main.cjs && esbuild electron/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=electron/out/preload.cjs",
+    "desktop:dev": "npm run build && npm run desktop:compile && electron .",
+    "desktop:build": "npm run build && npm run desktop:compile && electron-builder --win"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "monaco-editor": "^0.52.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "~5.6.2",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.algoview.app",
+    "productName": "AlgoView",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/out/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to": "runtime"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "AlgoView",
+      "artifactName": "AlgoView-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "AlgoView-${version}-Portable.exe"
+    }
+  }
+}

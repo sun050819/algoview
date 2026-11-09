@@ -1,0 +1,21 @@
+# 依赖与构建产物（都可重新生成）
+node_modules/
+dist/
+build/out/
+release/
+electron/out/
+
+# npm run dist 在"单独 clone 本仓库"时的输出目录
+artifacts/
+
+# 增量编译 / 验证脚本的中间产物
+.cache/
+*.tsbuildinfo
+
+# 浏览器端到端脚本的输出（截图）
+scripts/out/
+
+# 本地环境
+*.local
+.DS_Store
+npm-debug.log*
