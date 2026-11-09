@@ -45,6 +45,21 @@ Windows 也可以直接双击仓库根目录的 **`start.cmd`**：它会在第�
 
 ---
 
+## 下载（不想装构建环境）
+
+到 [Releases · v1.0.0](https://github.com/sun050819/algoview/releases/tag/v1.0.0) 直接下：
+
+| 文件 | 适用 | 说明 |
+|---|---|---|
+| `AlgoView-Setup-1.0.0.exe` | Windows x64 | 安装版，装到 `%LOCALAPPDATA%\Programs\AlgoView`，带卸载程序 |
+| `AlgoView-Portable-1.0.0.zip` | Windows x64 | 绿色版，解压得到 `AlgoView-1.0.0\`，双击其中的 `AlgoView.exe` |
+| `AlgoView-Web-Offline.zip` | 任意系统 | 不装 Electron 的轻量版，需 Node 18+，双击 `启动服务.cmd` |
+
+安装版把用户数据放在 `%APPDATA%\AlgoView`，绿色版放在解压目录的 `userdata\`，
+所以两个版本可以同时开着，互不顶掉；卸载安装版会连用户数据一起清掉。
+
+---
+
 ## 四种语言，三套追踪器
 
 每门语言都用**它自己生态里最正统的调试接口**，而不是另造一个解释器。代价是必须装对应工具链，

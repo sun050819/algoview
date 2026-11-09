@@ -253,8 +253,10 @@ server.listen(PORT, HOST, () => {
   console.log('');
   console.log(hasSite ? '  个人主页 · 已就绪' : '  算法视界 · 已就绪');
   console.log('');
-  console.log(`  个人主页   ${base}/`);
-  if (hasSite) console.log(`  项目介绍   ${base}/case/algo/`);
+  if (hasSite) {
+    console.log(`  个人主页   ${base}/`);
+    console.log(`  项目介绍   ${base}/case/algo/`);
+  }
   console.log(`  算法视界   ${base}/algo/`);
   console.log('');
   console.log(`  ${mark(t.python)} Python   ${t.python.path || '未检测到 python'}`);
