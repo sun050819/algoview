@@ -47,6 +47,7 @@ const KEEP = new Set([
   'server/site.cjs',                 // 只有开发副本有：托管个人主页
   'src/languages/localBridge.ts',    // 提示文案按"仓库 / 离线包"措辞
   'scripts/verify-links.mjs',        // 本地站点专用
+  'scripts/verify-3stage.mjs',       // 验证 主页→过渡页→应用 三段跳转，仓库版没有主页
 ]);
 /** 生成物目录（任何层级出现都跳过） */
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'release', 'out', '.cache', 'artifacts', '.git']);
