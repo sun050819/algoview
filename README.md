@@ -139,8 +139,8 @@ npm run dist
 | `AlgoView-Portable-1.0.0.zip` | 免安装绿色版：解压双击 `AlgoView.exe`，不写注册表 |
 | `AlgoView-Web-Offline.zip` | Web 离线包：`dist/` + `server/` + `runtime/`，需 Node 18+，双击 `启动服务.cmd` |
 
-输出目录：单独 clone 本仓库时写到 `artifacts/`；如果它放在个人主页站点里（同级有 `case/algo/`），
-会写进站点的下载目录。打包需要本机有 `electron` / `electron-builder` 缓存或能联网下载。
+产物写到仓库根目录的 `artifacts/`（已在 `.gitignore` 里，不会进提交）。
+打包需要本机有 `electron` / `electron-builder` 缓存或能联网下载。
 
 ---
 
@@ -177,17 +177,12 @@ node scripts/e2e.mjs py python scripts/fixtures/quicksort.py
 | 需要什么 | 怎么定位 | 可覆盖 |
 |---|---|---|
 | 前端产物 / 追踪器 | 相对于 `server/bridge.cjs` | — |
-| 支持站点（可选） | 向上找同时有 `index.html` 与 `case/` 的那一层 | `DSA_SITE_DIR` |
 | 本地服务端口 | 默认 5321 | `DSA_BRIDGE_PORT` / `?bridge=` |
 | MinGW 工具链 | 环境变量 → PATH → 各盘常规布局 | `DSA_MINGW_DIR` / `DSA_GCC` / `DSA_GDB` |
 
 前端构建用 `base: './'`，产物里的资源引用全是相对路径。
 
 ---
-
-## 出处
-
-本项目同时是个人作品集「Search & Verify」的第 06 号作品，配套介绍页见个人主页的 `case/algo/`。
 
 ## License
 

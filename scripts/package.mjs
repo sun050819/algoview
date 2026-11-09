@@ -1,5 +1,5 @@
 /**
- * 生成过渡页「下载」区的三个产物（全程离线，只用本机已有缓存）
+ * 生成三个发布包（全程离线，只用本机已有缓存）
  *
  *   AlgoView-Setup-1.0.0.exe      NSIS 安装版
  *   AlgoView-Portable-1.0.0.zip   免安装绿色版（解压双击 AlgoView.exe）
@@ -18,26 +18,12 @@ import { execFileSync } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/**
- * 个人主页根目录：从本脚本向上找"同时有 index.html 和 case/"的那一层。
- * 不写死目录名/层级，所以整套目录改名或搬走后仍能定位下载区。
- * 单独分发（把本仓库单独 clone 出去）时找不到，返回 null，产物落到本仓库的 artifacts/。
- */
-function findSiteDir(start) {
-  let dir = start;
-  for (let i = 0; i < 5; i++) {
-    dir = path.dirname(dir);
-    if (fs.existsSync(path.join(dir, 'index.html')) && fs.existsSync(path.join(dir, 'case'))) return dir;
-  }
-  return null;
-}
-const SITE = findSiteDir(ROOT);
 const REL = path.join(ROOT, 'release');
 const WIN = path.join(REL, 'win-unpacked');
 const APP = path.join(WIN, 'resources', 'app');
 const WEB = path.join(REL, 'web-offline', 'AlgoView-Web-Offline');
-/** 有个人主页就写进它的下载目录；单独 clone 时写进本仓库 artifacts/ */
-const OUT = SITE ? path.join(SITE, 'case', 'algo', 'downloads') : path.join(ROOT, 'artifacts');
+/** 产物统一写到仓库根目录的 artifacts/（已在 .gitignore 里） */
+const OUT = path.join(ROOT, 'artifacts');
 const INSTALLER_NSI = path.join(ROOT, 'build', 'installer.nsi');
 const LOCAL = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local');
 
@@ -135,7 +121,6 @@ fs.writeFileSync(path.join(WEB, 'README.md'), [
   '无需 npm install、无需联网。已包含构建好的前端、本地服务与三套追踪器。', '',
   '## 启动', '1. 安装 Node.js 18+；2. 双击 `启动服务.cmd` 并保持窗口开着；',
   '3. 浏览器打开 http://127.0.0.1:5321/ 。', '',
-  '本包不含个人主页与过渡页，所以根路径会直接落到算法视界应用。', '',
   '## 语言工具链（按需）',
   '- Python 3.8+ / JDK 8+（`javac`、`java` 在 PATH）/ MinGW-w64（`gcc`、`g++`、`gdb`）。',
   '- 启动窗口会打印四种语言是否就绪；缺哪个只影响那一门。', '',

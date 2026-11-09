@@ -46,8 +46,8 @@ function bridgeOrigin(): string {
 }
 
 const MISSING_BRIDGE_HINT =
-  '本地执行服务没连上。真实运行需要它：双击个人主页目录里的「启动个人主页.cmd」' +
-  '（或本应用目录里的「start.cmd」），保持窗口开着，再点运行。';
+  '本地执行服务没连上。真实运行需要它：运行仓库根目录的「start.cmd」' +
+  '（离线包则是「启动服务.cmd」），保持窗口开着，再点运行。';
 
 function desktop() {
   return typeof window !== 'undefined' ? window.dsaDesktop : undefined;
