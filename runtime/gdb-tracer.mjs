@@ -171,35 +171,48 @@ function isGdbNoise(t) {
 }
 
 // ---------- 源码 → 主函数首语句行 ----------
+/**
+ * 返回 main 函数体里"第一条语句"所在行（1-based）。
+ *
+ * 这里必须精确：断点打在 main 的签名行之前（比如 #include 那行）时，gdb 会把它挪到
+ * 第一行有代码的位置，而 C++ 的 iostream 静态初始化（_GLOBAL__sub_I_main）恰好也
+ * 绑在同一行——于是断点先命中静态初始化帧，追踪器会白走几十秒、输出也错。
+ *
+ * 同时要支持"单行 main"：`int main(){ ... }` 的第一条语句就在签名行上。
+ */
 function findMainFirstLine(src) {
   const lines = src.split('\n');
-  let braceDepth = 0;
-  let inMainBody = false;
-  let bodyBraceSeen = false;
+  const SIG = /(?:^|[\s*&])(?:int|void|signed|unsigned|long|char|float|double|bool|auto|std::[A-Za-z_]\w*)\b[^;{]*\bmain\s*\(/;
+  let sig = -1;
   for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    if (!inMainBody) {
-      if (/\b(?:int|void|unsigned|long|char|float|double|bool|auto|std::)\b[^;{]*\bmain\s*\(/.test(l)) {
-        inMainBody = true;
-        const open = l.indexOf('{');
-        if (open >= 0) { bodyBraceSeen = true; braceDepth = 1; }
-        continue;
+    if (SIG.test(lines[i])) { sig = i; break; }
+  }
+  if (sig < 0) return 1;
+
+  let depth = 0;
+  let opened = false;
+  for (let j = sig; j < lines.length; j++) {
+    const l = lines[j];
+    for (let k = 0; k < l.length; k++) {
+      const ch = l[k];
+      if (ch === '{') {
+        opened = true;
+        depth++;
+        // 同一行就有语句（不是只有 `}` 收尾）→ 首语句就在这一行
+        const rest = l.slice(k + 1);
+        if (depth === 1 && /[^}\s]/.test(rest) && !/^\s*(\/\/|\/\*)/.test(rest)) return j + 1;
+      } else if (ch === '}') {
+        depth--;
+        if (opened && depth <= 0) return j + 1; // 空函数体：退回签名行
       }
-      continue;
     }
-    for (const ch of l) {
-      if (ch === '{') { bodyBraceSeen = true; braceDepth++; }
-      else if (ch === '}') braceDepth--;
-    }
-    if (bodyBraceSeen && braceDepth <= 0) break; // main 结束
-    if (bodyBraceSeen && braceDepth >= 1) {
-      const trimmed = l.trim();
-      if (trimmed && !trimmed.startsWith('//') && !trimmed.startsWith('#')) {
-        return i + 1; // 1-based 行号
-      }
+    // 签名行之后的第一个非空、非注释行就是首语句
+    if (j > sig && opened && depth >= 1) {
+      const t = l.trim();
+      if (t && !t.startsWith('//') && !t.startsWith('/*')) return j + 1;
     }
   }
-  return 1; // 兜底：第 1 行
+  return sig + 1;
 }
 
 // ---------- 主流程 ----------
@@ -278,11 +291,12 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
   // gdb 停在断点时会在 CLI 里多打一行"源码回显"（`2\tint main() {...}`），
   // 格式与程序输出无法区分，所以用上一条 "… in main () at file.c:12" 做前导标记
   let sourceEchoPending = false;
+  const seenNotices = new Set();   // 崩溃/信号类提示只报一次
   const cmdPending = new Map();
   const cmdQueue = [];
   function sendCmd(cmd, cb) {
     const id = ++cmdId;
-    cmdPending.set(id, cb);
+    cmdPending.set(id, { cb, cmd });
     cmdQueue.push(id);
     gdbProc.stdin.write(cmd + '\n');
   }
@@ -330,9 +344,16 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
     } else if (line.startsWith('^')) {
       // 命令响应：按发送顺序取回回调
       const id = cmdQueue.shift();
-      const cb = cmdPending.get(id);
+      const entry = cmdPending.get(id);
       cmdPending.delete(id);
-      if (cb) cb(line);
+      if (entry && typeof entry.cb === 'function') {
+        entry.cb(line);
+      } else if (entry && /^\^error/.test(line) && /-exec-(?:step|next|finish)\b/.test(entry.cmd)) {
+        // 单步/返回失败（典型：库帧是外层帧，finish 不合法）→ 继续跑，
+        // 否则追踪器会停在原地等一个永远不来的 *stopped，直到超时。
+        dbg('step command failed, continue instead: ' + entry.cmd);
+        if (!finished) send('-exec-continue');
+      }
     } else if (line.startsWith('=')) {
       // 通知：主线程退出 = 程序结束
       if (line.startsWith('=thread-exited,id="1"')) {
@@ -349,8 +370,9 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
         const kept = [];
         for (const rl of splitRawLines(m[1])) {
           // 停止位置描述：`1, 0x... in main () at main.cpp:2`
-          if (/\bin \S+ \(\) at [^"]*:\d+$/.test(rl)) { sourceEchoPending = true; continue; }
-          // 紧跟其后的源码回显：`3\tint main() { ... }`
+          // 也可能没有 `in`：`1, _GLOBAL__sub_I_main () at main.cpp:2`
+          if (/\bat\s+[^"\s]+:\d+\s*$/.test(unescapeMi(rl))) { sourceEchoPending = true; continue; }
+          // 紧跟其后的源码回显：`3\tint main() { ... }`（gdb 用真实制表符分隔行号与源码）
           if (sourceEchoPending && /^\d+\\t/.test(rl)) { sourceEchoPending = false; continue; }
           const ln = unescapeMi(rl)
             .replace(/&"(?:[^"\\]|\\.)*"/g, '')   // 混进来的 gdb 日志片段
@@ -358,6 +380,14 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
             .replace(/\[New Thread[^\]]*\]/g, '')
             .replace(/\[Thread[^\]]*\]/g, '');
           if (ln.trim() === '') { kept.push(''); continue; }
+          // 源码回显的硬特征：行号 + 制表符 + 源码。即使前面没收到停止描述也要丢，
+          // 否则 `2\tint main(){...}` 会被当成程序输出（单行 main 时必现）。
+          if (/^\d+\t/.test(ln)) { sourceEchoPending = false; continue; }
+          // 崩溃提示保留一次即可（gdb 每次 stop 都会重打一遍）
+          if (/^(?:Program received signal|SIG[A-Z]+,\s)/.test(ln.trim())) {
+            if (seenNotices.has(ln.trim())) continue;
+            seenNotices.add(ln.trim());
+          }
           if (isGdbNoise(ln.trim())) continue;
           kept.push(ln);
           sourceEchoPending = false;   // 已经是真正的程序输出了，回显标记作废
@@ -380,9 +410,13 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
       const m = /^@"((?:[^"\\]|\\.)*)"/.exec(line);
       if (m) printOutput(unescapeMi(m[1]) + '\n');
     } else {
-      // 裸行 → 可能是程序输出或 gdb console 噪音；按内容过滤
-      const t = line.trim();
-      if (running && !isGdbNoise(t)) printOutput(line + '\n');
+      // 裸行 → 可能是程序输出，也可能是"程序输出没换行 + gdb 的 MI 记录挤在同一行"
+      // （C 的 printf 不带 \n 时必现：`hello 123~"[Thread ... exited with code 0]\n"`）
+      const cleaned = line
+        .replace(/[~@&=]"(?:[^"\\]|\\.)*"/g, ' ')                    // 混进来的 MI 记录
+        .replace(/\[(?:New Thread|Thread|Inferior)[^\]]*\]/g, ' ')   // 线程/退出横幅
+        .trim();
+      if (running && cleaned && !isGdbNoise(cleaned)) printOutput(cleaned + '\n');
     }
   }
 
@@ -405,6 +439,18 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
 
     // 按物理栈深度判定 call/return（不依赖函数名变化——递归时函数名相同但栈加深）
     readDepth((depth) => {
+      // 断点可能先命中 main 之前的静态初始化帧（C++ 的 _GLOBAL__sub_I_main 等，
+      // iostream 必有；gdb 还会把它连同 main 挂在同一行）。那不是用户代码：
+      // 直接 continue 到真正的 main，否则会白走几十秒，输出也会混进回显。
+      const startupFrame = reason === 'breakpoint-hit' && callStack.length === 0 && fn !== 'main';
+      if (startupFrame) {
+        steps++;
+        if (steps >= STEP_LIMIT) { finalize(); return; }
+        lastFn = fn;
+        lastDepth = depth;
+        send('-exec-continue');
+        return;
+      }
       const isMainEntry = reason === 'breakpoint-hit' && callStack.length === 0;
       if (isMainEntry) {
         callStack.length = 0;
@@ -472,8 +518,13 @@ function traceWithGdb(gdb, exePath, srcPath, src, tmpdir, started) {
         }
         steps++;
         if (steps >= STEP_LIMIT) { finalize(); return; }
-        // 误入库函数（push_back/cout/printf/endl 等）：finish 返回到用户帧，而非 continue 跑到底
-        if (!finished) send('-exec-finish');
+        // 误入库函数（push_back/cout/printf/endl 等）：finish 返回到用户帧。
+        // 但栈只剩 1 层时 gdb 会报 "finish not meaningful in the outermost frame"
+        // （尾调用 / 无调试信息的库帧），那就直接 continue 让程序跑完并 flush 输出。
+        if (!finished) {
+          if (depth <= 1) send('-exec-continue');
+          else send('-exec-finish');
+        }
       }
     });
   }
